@@ -1,6 +1,6 @@
 /*
  * Raphael SketchPad
- * Version 0.5.1
+ * Version 0.5.4
  * Copyright (c) 2011 Ian Li (http://ianli.com)
  * Licensed under the MIT (http://www.opensource.org/licenses/mit-license.php) license.
  *
@@ -13,6 +13,9 @@
  * http://ianli.com/sketchpad/ for Usage
  * 
  * Versions:
+ * 0.5.4: modified to allow pinch,pan and draw at the same time on mobile devices (one finger to draw, 2 fingers to pan and pinch)
+ * 0.5.3  modified to solve the wrong drawing location after pinch on chrome for andoid. The solution uses setPos function to bypass the offset() method bug.
+ * 0.5.2: modified to use it on IPAD and android
  * 0.5.1 - Fixed extraneous lines when first line is drawn.
  *         Thanks to http://github.com/peterkeating for the fix!
  * 0.5.0 - Added freeze_history. Fixed bug with undoing erase actions.
@@ -41,6 +44,8 @@
 	/**
 	 * Function to create SketchPad object.
 	 */
+	var scaling=0; //indicates if we are zooming
+	var drawing=0; //indicates if we are drawing
 	Raphael.sketchpad = function(paper, options) {
 		return new SketchPad(paper, options);
 	}
@@ -64,15 +69,19 @@
 		jQuery.extend(_options, options);
 		
 		
+		
 		// The Raphael context to draw on.
 		var _paper;
 		if (paper.raphael && paper.raphael.constructor == Raphael.constructor) {
 			_paper = paper;
 		} else if (typeof paper == "string") {
+			var variableName=paper;
 			_paper = Raphael(paper, _options.width, _options.height);
 		} else {
 			throw "first argument must be a Raphael object, an element ID, an array with 3 elements";
 		}
+		
+		
 		
 		// The Raphael SVG canvas.
 		var _canvas = _paper.canvas;
@@ -267,7 +276,7 @@
 
 					// iPhone Events
 					var agent = navigator.userAgent;
-					if (agent.indexOf("iPhone") > 0 || agent.indexOf("iPod") > 0) {
+					if (isTouchEnabled()) {
 						$(_container).unbind("touchstart", _touchstart);
 						$(_container).unbind("touchmove", _touchmove);
 						$(_container).unbind("touchend", _touchend);
@@ -285,7 +294,7 @@
 
 					// iPhone Events
 					var agent = navigator.userAgent;
-					if (agent.indexOf("iPhone") > 0 || agent.indexOf("iPod") > 0) {
+					if (isTouchEnabled()) {
 						$(_container).bind("touchstart", _touchstart);
 						$(_container).bind("touchmove", _touchmove);
 						$(_container).bind("touchend", _touchend);
@@ -293,7 +302,9 @@
 				}
 			} else {
 				// Reverse the settings above.
-				$(_container).attr("style", "cursor:default");
+				//gaucho: replaced the following line to do not erase the background.
+				//$(_container).attr("style", "cursor:default"); 
+				$(_container).attr("cursor", "default");
 				$(_container).unbind("mousedown", _mousedown);
 				$(_container).unbind("mousemove", _mousemove);
 				$(_container).unbind("mouseup", _mouseup);
@@ -301,7 +312,7 @@
 				
 				// iPhone Events
 				var agent = navigator.userAgent;
-				if (agent.indexOf("iPhone") > 0 || agent.indexOf("iPod") > 0) {
+				if (isTouchEnabled()) {
 					$(_container).unbind("touchstart", _touchstart);
 					$(_container).unbind("touchmove", _touchmove);
 					$(_container).unbind("touchend", _touchend);
@@ -316,6 +327,7 @@
 		
 		var _change_fn = function() {};
 		self.change = function(fn) {
+			
 			if (fn == null || fn === undefined) {
 				_change_fn = function() {};
 			} else if (typeof fn == "function") {
@@ -324,7 +336,7 @@
 		};
 		
 		function _fire_change() {
-			_change_fn();
+			_change_fn(variableName);
 		};
 		
 		// Miscellaneous methods
@@ -420,30 +432,48 @@
 		};
 		
 		function _touchstart(e) {
-			e = e.originalEvent;
-			e.preventDefault();
-
-			if (e.touches.length == 1) {
-				var touch = e.touches[0];
-				_mousedown(touch);
+			//gaucho: the settimeout in this function inserts a delay. the delay is useful when 
+                        // you are placing 2 fingers on the mobile device.
+                        //sometimes the first finger touches the screen before the second one.
+                        //without a delay raphael starts to draw because it finds just one finger on the screen
+                        // but we were just performing a pinch on the screen!!!
+                        //With this delay you are able to distinguish when the user wants to draw and when he wants to pan and pinch on the screen
+                        
+                        var f = e.originalEvent;
+                        
+			if (f.touches.length == 1) {
+				setTimeout(function() {
+					e = e.originalEvent;
+					if (e.touches.length == 1) {
+                                                //so, if after a timeout we still have a single finger on the screen, this means that we want for sure to start a drawing
+						drawing=true;
+						e.preventDefault();
+						var touch = e.touches[0];
+						_mousedown(touch);
+					}
+				}, 50,e);
 			}
 		}
 		
 		function _touchmove(e) {
 			e = e.originalEvent;
-			e.preventDefault();
-
-			if (e.touches.length == 1) {
+			//if we are drawing and we have just one finger on the screen, continue to draw, otherwise no
+			if ((e.touches.length == 1) && (drawing==true)) {
+				e.preventDefault();
 				var touch = e.touches[0];
 				_mousemove(touch);
 			}
+
 		}
 		
 		function _touchend(e) {
 			e = e.originalEvent;
-			e.preventDefault();
-
-			_mouseup(e);
+                        //if we were drawing, stop to do it, otherwise, let the pinch-pan to continue without a "preventDefault" call.			
+                        if(drawing){
+				drawing=false;
+				e.preventDefault();
+				_mouseup(e);
+			}
 		}
 		
 		// Setup
@@ -625,11 +655,12 @@
 
 		self.start = function(e, sketchpad) {
 			_drawing = true;
-
-			_offset = $(sketchpad.container()).offset();
+                        //this solves the bug related to offset() function returning wrong values when you pinch on chrome for android.
+			var elem = $(sketchpad.container());
+			_offset=findPos(elem[0]);
 			
-			var x = e.pageX - _offset.left,
-				y = e.pageY - _offset.top;
+			var x = e.pageX - _offset[0],
+				y = e.pageY - _offset[1];
 			_points.push([x, y]);
 
 			_c = sketchpad.paper().path();
@@ -663,12 +694,32 @@
 
 		self.move = function(e, sketchpad) {
 			if (_drawing == true) {
-				var x = e.pageX - _offset.left,
-					y = e.pageY - _offset.top;			
+				var x = e.pageX - _offset[0],
+					y = e.pageY - _offset[1];			
 				_points.push([x, y]);
 				_c.attr({ path: points_to_svg() });
 			}
 		};
+
+//gaucho: this function finds the position of the schetch inside the document
+//        without using the offset() function, when possibile, in order to avoid
+//        the current bug on chrome for android when you pinch on the page.
+function findPos(obj) {
+	var curleft = curtop = 0;
+	
+	if (obj.offsetParent) {
+		
+		do {
+			curleft += obj.offsetLeft;
+			curtop += obj.offsetTop;
+			} while (obj = obj.offsetParent);
+			
+			return [curleft,curtop];
+	}else{ //let's use the default method offset()
+		var tmpOffset = obj.offset();
+		return [tmpOffset.left,tmpOffset.top];
+	}
+}
 
 		function points_to_svg() {
 			if (_points != null && _points.length > 1) {
@@ -708,6 +759,15 @@ Raphael.fn.display = function(elements) {
 		this[type]().attr(e);
 	}
 };
+
+// this function identify if the device is a mobile device.
+function isTouchEnabled() {  
+	var agent = navigator.userAgent;  
+ 	return agent.indexOf("iPhone") > 0 ||  
+ 	agent.indexOf("iPod") > 0 ||  
+ 	agent.indexOf("iPad") > 0 ||  
+ 	agent.indexOf("Android") > 0;  
+}  
 
 
 /**
@@ -778,7 +838,7 @@ function bindCallbacks(o, callbacks, args) {
 // Test for equality any JavaScript type.
 // Discussions and reference: http://philrathe.com/articles/equiv
 // Test suites: http://philrathe.com/tests/equiv
-// Author: Philippe RathÃ© <prathe@gmail.com>
+// Author: Philippe RathÃƒÂ© <prathe@gmail.com>
 
 var equiv = function () {
 
